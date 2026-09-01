@@ -5,7 +5,7 @@ from datetime import datetime
 from collections import namedtuple
 import matplotlib.pyplot as plt
 
-# 1. 경로 인식 방어벽 (VS Code 및 실행 환경 안정화)
+# 1. Environment Path Protection (VS Code & Execution Environment Stabilization)
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
@@ -16,7 +16,7 @@ from simglucose.actuator.pump import InsulinPump
 from simglucose.simulation.env import T1DSimEnv
 
 # ====================================================================
-# 2. 이중제어 규격 시나리오 (기본 식사 + dynamic 구호 당분)
+# 2. Dual-Variable Scenario Specification (Standard Meal + Dynamic Rescue Carbs)
 # ====================================================================
 class TigrogenDualScenario:
     def __init__(self, base_carbs=58.8):
@@ -53,7 +53,7 @@ def get_cgm_value(obs):
     return 120.0 
 
 # ====================================================================
-# 3. 환자군 N=30 무작위 셔플 및 분할 (시드 고정)
+# 3. Patient Cohort N=30 Random Shuffling & Segregation (Fixed Seed)
 # ====================================================================
 all_patients = [f'adult#{str(i).zfill(3)}' for i in range(1, 11)] + \
                [f'adolescent#{str(i).zfill(3)}' for i in range(1, 11)] + \
@@ -66,17 +66,17 @@ dev_cohort = shuffled_patients[:20]
 val_cohort = shuffled_patients[20:]  
 
 # ====================================================================
-# 4. 완전미분 기반 이중제어 변수 아키텍처 컨트롤러 (Refactored)
+# 4. Derivative-Based Dual-Variable Controller Architecture
 # ====================================================================
 class TigrogenDualVariableController:
     def __init__(self, patient_object, patient_name, target_meal_carbs=58.8):
         self.prev_trend = 0.0
         
-        # 환자 고유 생체 파라미터 계수 수집 (CR: 탄수화물 비율, CF: 인슐린 민감도 지수)
+        # Collect patient-specific physiological parameters (CR: Carb Ratio, CF: Correction Factor)
         self.CR = getattr(patient_object, 'CR', None)
         self.CF = getattr(patient_object, 'CF', None)
         
-        # 방어적 예외 처리: 데이터 누락 시 군집별 표준 임계값 매핑
+        # Defensive fallback: Default cohort mappings if parameters are missing
         if self.CR is None or self.CF is None:
             if 'child' in patient_name:
                 self.CR, self.CF = 20.0, 5.0
@@ -85,25 +85,25 @@ class TigrogenDualVariableController:
             else:
                 self.CR, self.CF = 10.0, 2.5
                 
-        # [제어 가중치 파라미터 변수화 - 교수님 지적 방어존]
-        self.target_bg = 115.0            # 목표 혈당 기선 (mg/dL)
-        self.g_safe = 95.0                # 저혈당 방어 기선 (mg/dL)
-        self.theta_critical = 0.15        # 가속도 급증 임계치
+        # [Control Weight Parameters]
+        self.target_bg = 115.0            # Target Blood Glucose Baseline (mg/dL)
+        self.g_safe = 95.0                # Hypoglycemia Safety Line (mg/dL)
+        self.theta_critical = 0.15        # Acceleration Critical Spike Threshold
         
-        # 선형 제어 튜닝 가중치 (Empirical Tuning Weights)
-        self.w_bolus_meal = 1.30          # 식사 볼루스 과보상 계수
-        self.w_bolus_accel = 3.5          # 가속도 기반 추가 볼루스 계수
-        self.w_basal_error = 0.015        # 혈당 편차 비례 기저 계수
-        self.w_basal_trend = 0.06         # 혈당 변화량 비례 기저 계수
-        self.w_rescue_gain = 0.18         # 구호 당분 주입 게인
+        # Empirical Control Tuning Weights
+        self.w_bolus_meal = 1.30          # Meal Bolus Compensation Factor
+        self.w_bolus_accel = 3.5          # Acceleration-based Additional Bolus Gain
+        self.w_basal_error = 0.015        # Error-proportional Basal Gain
+        self.w_basal_trend = 0.06         # Trend-proportional Basal Gain
+        self.w_rescue_gain = 0.18         # Rescue Carbohydrate Injection Gain
         
-        # 입력받은 식사량을 기준으로 이상적 식사 볼루스 계산 (하드코딩 제거)
+        # Calculate ideal meal bolus dynamically based on input carbohydrates
         self.ideal_meal_bolus = (target_meal_carbs / self.CR)
         
     def get_control_actions(self, current_time, cgm_val, prev_cgm, meal_time):
         error = cgm_val - self.target_bg
         
-        # 1차 미분(Trend) 및 2차 미분(Acceleration) 계산
+        # Calculate 1st Derivative (Trend) and 2nd Derivative (Acceleration)
         trend = cgm_val - prev_cgm
         acceleration = trend - self.prev_trend
         self.prev_trend = trend
@@ -112,17 +112,17 @@ class TigrogenDualVariableController:
         bolus_dose = 0.0
         rescue_glucose = 0.0  
         
-        # [제어 루프 1: 인슐린 주입 회로]
-        # 식사 정각 동기화 볼루스 투여
+        # [Control Loop 1: Insulin Injection Circuit]
+        # Synchronized Meal Bolus Delivery
         if current_time == meal_time:
             bolus_dose = self.ideal_meal_bolus * self.w_bolus_meal + max(0, error / self.CF)
             return basal_dose, bolus_dose, rescue_glucose
 
-        # 혈당 상승 가속도 급증 시 선제적 볼루스 투여 (Preemptive Bolus)
+        # Preemptive Bolus on Glucose Acceleration Spikes
         if acceleration > self.theta_critical and cgm_val > self.target_bg:
             bolus_dose = (acceleration * self.w_bolus_accel) / self.CF
 
-        # 기저 인슐린(Basal) 실시간 미분 비례 투여
+        # Real-time Derivative Proportional Basal Delivery
         if cgm_val > self.target_bg:
             basal_dose = (error * self.w_basal_error + max(0, trend) * self.w_basal_trend) / self.CF
         elif self.g_safe <= cgm_val <= self.target_bg:
@@ -130,8 +130,8 @@ class TigrogenDualVariableController:
         else:
             basal_dose = 0.0
 
-        # [제어 루프 2: 구호 당분 투여 회로 (Dual-Variable Predictive Loop)]
-        # 25분 뒤의 혈당 평형 상태를 선제 예측 (Taylor Series 근사 방식 원리 적용)
+        # [Control Loop 2: Rescue Carbohydrate Circuit (Dual-Variable Predictive Loop)]
+        # 25-Min Future Metabolic Equilibrium Prediction (2nd-Order Taylor Series Expansion)
         predicted_bg_25min = cgm_val + (trend * 5) + (acceleration * 2.5)
         
         if predicted_bg_25min < self.g_safe or cgm_val < 100:
@@ -141,12 +141,12 @@ class TigrogenDualVariableController:
             needed_bg_recovery = self.g_safe - predicted_bg_25min
             if trend < 0 or cgm_val < 100:
                 rescue_glucose = (needed_bg_recovery / self.CF) * self.CR * self.w_rescue_gain
-                rescue_glucose = np.clip(rescue_glucose, 2.0, 15.0)  # 하드웨어 주입 제한 마진
+                rescue_glucose = np.clip(rescue_glucose, 2.0, 15.0)  # Hardware Delivery Safety Margin
 
         return basal_dose, bolus_dose, rescue_glucose
 
 # ====================================================================
-# 5. 시뮬레이션 구동 및 통계 매트릭스 수집 엔진
+# 5. Simulation Driver & Statistical Matrix Collection Engine
 # ====================================================================
 def run_cohort_simulation(cohort_list, title, base_carbs=58.8):
     SIM_STEPS = 72  
@@ -197,23 +197,23 @@ def run_cohort_simulation(cohort_list, title, base_carbs=58.8):
     min_states = np.min(bg_matrix, axis=1)   
     
     print("\n" + "="*70)
-    print(f"🎯 [{title} INTEGRITY REPORT]")
+    print(f"🎯 [{title.upper()} INTEGRITY REPORT]")
     print("="*70)
-    print(f" 1. 총 검증 인구 수 (Cohort Population)       : N = {len(cohort_list)} 명")
-    print(f" 2. 식후 최고 피크 평균 혈당 (Mean Peak BG)    : {np.mean(peak_states):.2f} mg/dL")
-    print(f" 3. 시뮬레이션 종단 평균 혈당 (Final Mean BG)   : {np.mean(final_states):.2f} mg/dL")
-    print(f" 4. 전 가상환자 중 최저 혈당 기록 (Absolute Min): {np.min(min_states):.2f} mg/dL")
+    print(f" 1. Total Cohort Population                  : N = {len(cohort_list)}")
+    print(f" 2. Postprandial Peak Mean BG                : {np.mean(peak_states):.2f} mg/dL")
+    print(f" 3. Simulation Endpoint Mean BG              : {np.mean(final_states):.2f} mg/dL")
+    print(f" 4. Absolute Minimum BG Recorded Across All  : {np.min(min_states):.2f} mg/dL")
     print("="*70 + "\n")
     
     return results
 
-# 시뮬레이션 가동 (정규 식사 규격 적용)
+# Run Simulations (Standard Meal Scenario)
 TARGET_CARBS = 58.8
 dev_results = run_cohort_simulation(dev_cohort, "Development Cohort (N=20)", base_carbs=TARGET_CARBS)
 val_results = run_cohort_simulation(val_cohort, "Validation Cohort (N=10)", base_carbs=TARGET_CARBS)
 
 # ====================================================================
-# 6. 최종 결과 시각화
+# 6. Final Performance Visualization
 # ====================================================================
 fig, axes = plt.subplots(1, 2, figsize=(18, 6.5), sharey=True)
 
@@ -245,6 +245,6 @@ plt.subplots_adjust(left=0.08, right=0.95, bottom=0.15, top=0.88, wspace=0.15)
 
 output_path = os.path.join(current_dir, "Tigrogen_OS_Dual_Variable_Final_Proof.png")
 plt.savefig(output_path, dpi=300, bbox_inches='tight')
-print(f"🎨 [시각화 무결성] 고해상도 그래프 파일이 저장되었습니다:\n -> {output_path}\n")
+print(f"🎨 [Visualization Complete] High-resolution graph saved at:\n -> {output_path}\n")
 
 plt.show()
